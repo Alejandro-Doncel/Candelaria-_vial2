@@ -1,0 +1,12 @@
+Candelaria Vial — despliegue en Streamlit Community Cloud
+
+1. Sube TODO el contenido de esta carpeta a la raíz del repositorio de GitHub.
+2. Verifica que app.py, requirements.txt y la carpeta src/ queden en la raíz.
+3. En Streamlit Community Cloud selecciona el repositorio y usa app.py como Main file path.
+4. La primera ejecución crea los artefactos automáticamente ejecutando src.train si no existen.
+5. Si Datos Abiertos Colombia no responde desde Streamlit, descarga el CSV oficial y súbelo como:
+   data/raw/accidentalidad_candelaria.csv
+6. La interfaz final pide AÑO y MES por separado; no utiliza un calendario de fecha completa.
+7. La alerta ALTA/NO ALTA la produce el Random Forest con score >= 0.38.
+8. La definición histórica de ALTA sigue siendo >= 5 siniestros por corregimiento-mes.
+9. No reemplaces la etiqueta de clasificación por la regla "predicción de regresión >= 5"; son dos problemas distintos.
