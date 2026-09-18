@@ -19,42 +19,86 @@ Conjunto `Accidentalidad Vial Municipio de Candelaria, Valle`, publicado en Dato
 - API CSV: <https://www.datos.gov.co/resource/7wbf-88zm.csv?$limit=100000>
 - Identificador: `7wbf-88zm`
 
-`src/data.py` funciona así:
+`src/data.py` usa primero `data/raw/accidentalidad_candelaria.csv` si existe; si no, intenta descargar el CSV oficial.
 
-- si existe `data/raw/accidentalidad_candelaria.csv`, usa ese CSV;
-- si no existe, intenta descargarlo automáticamente desde la URL oficial.
+## Definición final de alta siniestralidad
 
-Por eso **no es necesario subir una carpeta `data/` vacía a GitHub**.
+La etiqueta de clasificación quedó fijada así:
+
+> **ALTA = 5 o más siniestros en un corregimiento-mes.**
+
+Este umbral define la clase real. No se baja para balancear artificialmente las clases ni para mejorar métricas.
 
 ## Modelos
 
 ### Problema 1 — regresión
 
-Se comparan los tres algoritmos vistos en el curso:
-
-- Regresión lineal
-- Árbol de decisión
-- Random Forest
-
-Como referencia se calcula un baseline de promedio histórico. Ridge fue retirado.
+Se comparan Regresión lineal, Árbol de decisión y Random Forest. El año previo al test se usa para seleccionar/optimizar sin mirar el año final de prueba.
 
 ### Problema 2 — clasificación
 
-Se comparan:
+Se comparan Regresión logística, Árbol de decisión y Random Forest. El clasificador operativo de la aplicación es **Random Forest**.
 
-- Regresión logística
-- Árbol de decisión
-- Random Forest
+Parámetros congelados del RF operativo:
 
-Como referencia se calcula una clase mayoritaria sin usar `DummyClassifier`.
+- `n_estimators=350`
+- `min_samples_leaf=2`
+- `max_features=0.5`
+- `class_weight="balanced_subsample"`
+- `random_state=42`
 
-La etiqueta `alta_siniestralidad` se construye **solo con el periodo de entrenamiento**. Se calcula el percentil 75 de los meses que tuvieron al menos un siniestro y se define como alta siniestralidad un conteo estrictamente superior a ese valor. Así se evita que la abundancia de meses con cero convierta automáticamente un solo siniestro en una alerta alta.
+## Partición temporal y umbral de decisión
 
-Las variables predictoras de ambos problemas son información disponible antes del mes objetivo: corregimiento, calendario, siniestros del mes anterior y promedio de los tres meses previos.
+La lógica final separa los años cronológicamente:
 
-## Partición y optimización
+- años anteriores a 2024: ajuste previo;
+- **2024: validación temporal** para revisar el comportamiento y fijar el corte de alerta;
+- 2021–2024: reentrenamiento final;
+- **2025: test final**, sin reajustar el umbral después de ver sus resultados.
 
-El último año disponible se reserva para prueba temporal. El año inmediatamente anterior funciona como validación interna para `RandomizedSearchCV`; el año de prueba no participa en la selección de hiperparámetros.
+En la validación 2024, los cortes `0.37` y `0.38` lograron el mismo resultado (4 TP, 0 FP, 0 FN). Se conservó el mayor de los empatados:
+
+> **Umbral de decisión del Random Forest = 0.38.**
+
+Este `0.38` NO significa “5 siniestros”. Son conceptos distintos:
+
+- `>= 5 siniestros` define qué observaciones históricas son ALTA;
+- `score RF >= 0.38` activa la alerta del clasificador.
+
+## Resultado final y limitación real
+
+Con el umbral `0.38` congelado, el test 2025 produjo:
+
+- TN = 429
+- FP = 1
+- FN = 2
+- TP = 0
+- Accuracy ≈ 0.9931
+- Precision = 0
+- Recall = 0
+- F1 = 0
+- AUC-ROC ≈ 0.9419
+- AUC-PR ≈ 0.2696
+
+Los dos eventos ALTA reales del test recibieron scores aproximados de `0.0604` y `0.3459`. Esto muestra que el modelo no reconoció ambos episodios con la misma intensidad.
+
+Como análisis de sensibilidad se observó que bajar drásticamente el corte hasta `0.02` permitía recuperar los dos positivos, pero generaba alrededor de **71 falsas alertas**. Ese corte **no se adopta**. Modificar el umbral después de mirar 2025 sería ajustar el proceso al test y, además, el costo operativo de decenas de falsas alarmas no está validado por la Secretaría.
+
+La conclusión final no es que los dos eventos sean datos atípicos. La limitación es que la clase ALTA es muy poco frecuente y las variables disponibles no contienen necesariamente todos los factores que explican un pico de siniestralidad. El clasificador puede ordenar riesgo de manera útil (AUC alto) y, aun así, no disponer de una frontera binaria estable que detecte todos los positivos sin disparar demasiadas falsas alertas.
+
+## Aplicación Streamlit
+
+La app pide **año y mes por separado**; no usa un calendario de fecha completa. También solicita corregimiento, siniestros del mes anterior y promedio de los tres meses previos.
+
+Muestra simultáneamente:
+
+- siniestros estimados por la regresión;
+- alerta `ALTA` / `NO ALTA` obtenida del **clasificador Random Forest**;
+- puntaje estimado de ALTA;
+- umbral preventivo de decisión (`0.38`);
+- definición histórica de ALTA (`>= 5 siniestros`).
+
+La etiqueta de la app **no** se calcula comparando la predicción de regresión contra 5.
 
 ## Estructura
 
@@ -62,6 +106,7 @@ El último año disponible se reserva para prueba temporal. El año inmediatamen
 app.py
 requirements.txt
 README.md
+PASOS_STREAMLIT.txt
 src/
   data.py
   features.py
@@ -74,18 +119,14 @@ scripts/
   generate_notebook.py
 ```
 
-`artifacts/` y `data/` se crean automáticamente cuando hacen falta; GitHub no necesita carpetas vacías.
-
-## Ejecutar el entrenamiento manualmente
-
-Desde la raíz del proyecto:
+## Ejecutar el entrenamiento
 
 ```bash
 pip install -r requirements.txt
 python -m src.train
 ```
 
-Esto crea:
+Se crean:
 
 ```text
 artifacts/
@@ -94,39 +135,18 @@ artifacts/
   metricas.json
 ```
 
-## Desplegar directamente en Streamlit Community Cloud
+## Uso de IA documentado
 
-El repositorio está preparado para que **no sea obligatorio entrenar manualmente antes del deploy**.
+El notebook incluye interacciones de IA en formato **Prompt → crítica/respuesta → acción**, incluyendo las decisiones que cambiaron el proyecto:
 
-1. Subir el contenido de esta carpeta a un repositorio de GitHub.
-2. Crear una app en Streamlit Community Cloud usando `app.py` como archivo principal.
-3. En la primera ejecución, si no existen `artifacts/`, la app descarga el CSV y ejecuta `src.train` automáticamente.
-4. Después carga los dos modelos y muestra la predicción de regresión y la alerta de clasificación.
+- reformulación del objetivo de clasificación;
+- mantenimiento de `ALTA >= 5` pese al desbalance;
+- separación entre umbral de la etiqueta y umbral de decisión;
+- elección de `0.38` usando validación 2024;
+- rechazo del corte `0.02` pese a recuperar los positivos, por la explosión de falsos positivos;
+- decisión de no seguir reajustando después de observar 2025;
+- interpretación de la limitación como problema de rareza de la clase y falta de variables explicativas, no como “datos atípicos”.
 
-Si el servidor no pudiera acceder a Datos Abiertos, la única acción adicional es descargar el CSV y añadirlo al repositorio con esta ruta exacta:
+## Limitaciones y uso responsable
 
-```text
-data/raw/accidentalidad_candelaria.csv
-```
-
-No es necesario modificar código.
-
-## Uso de la aplicación
-
-La app solicita:
-
-- corregimiento;
-- mes a priorizar;
-- siniestros del mes anterior;
-- promedio de siniestros de los tres meses previos.
-
-Entrega:
-
-- cantidad estimada de siniestros;
-- alerta `ALTA` / `NO ALTA`;
-- probabilidad estimada;
-- recomendaciones de revisión preventiva y advertencias de uso.
-
-## Limitaciones
-
-Los datos son registros administrativos y pueden presentar subregistro, cambios de cobertura o cambios en mecanismos de reporte. Los modelos no demuestran causalidad, no predicen comportamientos individuales y no deben utilizarse para sancionar personas. La salida es un insumo para priorización y revisión humana.
+Los datos son registros administrativos y pueden presentar subregistro, cambios de cobertura o cambios de reporte. Los modelos no demuestran causalidad, no predicen comportamientos individuales y no deben utilizarse para sancionar personas. La salida es un insumo para priorización y revisión humana.

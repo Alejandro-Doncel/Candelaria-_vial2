@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pandas as pd
 
 TARGET_REGRESSION = "siniestros_mes"
 TARGET_CLASSIFICATION = "alta_siniestralidad"
+
+# Decisión final del proyecto: un corregimiento-mes es ALTA siniestralidad
+# cuando registra 5 o más siniestros. Este valor NO se ajusta para balancear
+# las clases ni se modifica después de observar el año de prueba.
+HIGH_SINIESTRALIDAD_THRESHOLD = 5
 
 
 def _clean_text(series: pd.Series) -> pd.Series:
@@ -84,24 +87,24 @@ def prepare_monthly_counts(incidents: pd.DataFrame) -> pd.DataFrame:
 
 
 def high_siniestralidad_threshold(training_monthly: pd.DataFrame) -> tuple[int, float]:
-    """Define 'alta siniestralidad' usando solo el periodo de entrenamiento.
+    """Devuelve el umbral fijo del proyecto y el P75 activo solo como diagnóstico.
 
-    Se toma el percentil 75 de los meses que sí registraron al menos un siniestro
-    y se considera alta siniestralidad un valor estrictamente superior a ese P75.
-    Esto evita que la gran cantidad de meses con cero convierta '1 siniestro' en
-    una alerta alta por construcción.
+    La versión final NO calcula la etiqueta a partir del percentil. El P75 de los
+    meses con al menos un siniestro se conserva únicamente para trazabilidad del
+    análisis exploratorio que llevó a discutir la rareza de los meses críticos.
     """
     active = training_monthly.loc[
         training_monthly[TARGET_REGRESSION] > 0, TARGET_REGRESSION
     ]
-    if active.empty:
-        raise ValueError("No hay meses con siniestros en el periodo de entrenamiento.")
-    p75 = float(active.quantile(0.75))
-    threshold = max(1, math.floor(p75) + 1)
-    return threshold, p75
+    p75 = float(active.quantile(0.75)) if not active.empty else float("nan")
+    return HIGH_SINIESTRALIDAD_THRESHOLD, p75
 
 
-def add_classification_target(monthly: pd.DataFrame, threshold: int) -> pd.DataFrame:
+def add_classification_target(
+    monthly: pd.DataFrame,
+    threshold: int = HIGH_SINIESTRALIDAD_THRESHOLD,
+) -> pd.DataFrame:
+    """Añade la etiqueta binaria: 1 si el mes tiene `threshold` o más siniestros."""
     result = monthly.copy()
     result[TARGET_CLASSIFICATION] = (
         result[TARGET_REGRESSION] >= int(threshold)

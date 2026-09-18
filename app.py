@@ -19,39 +19,21 @@ st.set_page_config(
     layout="wide",
 )
 
-
 ARTIFACT_DIR = Path("artifacts")
 REG_MODEL = ARTIFACT_DIR / "modelo_priorizacion_mensual.joblib"
 CLF_MODEL = ARTIFACT_DIR / "modelo_alerta_alta_siniestralidad.joblib"
 METRICS = ARTIFACT_DIR / "metricas.json"
 
 
-# ============================================================
-# CONFIGURACIÓN DEL UMBRAL
-# ============================================================
-
-UMBRAL_ALTA_SINIESTRALIDAD = 5
-
-
-# ============================================================
-# FUNCIONES
-# ============================================================
-
 def artifacts_ready() -> bool:
-    return (
-        REG_MODEL.exists()
-        and CLF_MODEL.exists()
-        and METRICS.exists()
-    )
+    return REG_MODEL.exists() and CLF_MODEL.exists() and METRICS.exists()
 
 
 @st.cache_resource(show_spinner=False)
 def ensure_artifacts() -> None:
     """Entrena una sola vez si el repositorio aún no trae artefactos."""
-
     if artifacts_ready():
         return
-
     from src.train import main
 
     main()
@@ -62,26 +44,17 @@ def load_models():
     return (
         joblib.load(REG_MODEL),
         joblib.load(CLF_MODEL),
-        json.loads(
-            METRICS.read_text(
-                encoding="utf-8"
-            )
-        ),
+        json.loads(METRICS.read_text(encoding="utf-8")),
     )
 
 
-def recommended_actions(
-    high_risk: bool,
-    expected_count: float,
-) -> list[str]:
-
+def recommended_actions(high_risk: bool, expected_count: float) -> list[str]:
     if high_risk:
         return [
             "Priorizar revisión de señalización, iluminación y puntos de conflicto en el corregimiento.",
             "Considerar controles o acciones preventivas durante el mes, sujetos a validación en terreno.",
             "Contrastar la alerta con conocimiento técnico local antes de asignar recursos.",
         ]
-
     return [
         "Mantener monitoreo mensual y contrastar la estimación con reportes locales.",
         f"La regresión estima {expected_count:.2f} siniestros; una alerta baja no significa ausencia de riesgo.",
@@ -89,82 +62,48 @@ def recommended_actions(
     ]
 
 
-# ============================================================
-# TÍTULO
-# ============================================================
-
 st.title("🚦 Candelaria Vial")
-
 st.caption(
     "Apoyo a la priorización preventiva para la Secretaría de Tránsito y Transporte de Candelaria, Valle."
 )
 
-
-# ============================================================
-# PREPARACIÓN DE MODELOS
-# ============================================================
-
 if not artifacts_ready():
-
-    with st.spinner(
-        "Primera ejecución: descargando datos y entrenando los modelos del proyecto..."
-    ):
-
+    with st.spinner("Primera ejecución: descargando datos y entrenando los modelos del proyecto..."):
         try:
             ensure_artifacts()
-
         except Exception as exc:
-
             st.error(
                 "No fue posible preparar los modelos automáticamente. "
                 "Si la descarga pública está bloqueada, agrega el CSV como "
                 "`data/raw/accidentalidad_candelaria.csv` y vuelve a desplegar."
             )
-
             st.exception(exc)
             st.stop()
 
-
 monthly_model, alert_model, metadata = load_models()
 
-
-# ============================================================
-# INFORMACIÓN DE LOS DATOS
-# ============================================================
+HIGH_COUNT_THRESHOLD = int(metadata.get("umbral_alta_siniestralidad", 5))
+DECISION_THRESHOLD = float(metadata.get("umbral_decision_clasificacion", 0.38))
 
 st.info(
     f"Fuente: {metadata['registros_incidentes']:,} registros entre "
     f"{metadata['fecha_minima']} y {metadata['fecha_maxima']}. "
-    f"El año de prueba temporal es {metadata['anio_prueba']}."
+    f"Validación temporal: {metadata.get('anio_validacion', 'año previo')}; "
+    f"prueba final: {metadata['anio_prueba']}."
 )
 
-
-# ============================================================
-# ENTRADAS
-# ============================================================
-
-st.subheader("Prioriza el próximo mes")
-
-
+st.subheader("Prioriza un mes")
 col_a, col_b = st.columns(2)
 
-
-# ------------------------------------------------------------
-# COLUMNA A
-# ------------------------------------------------------------
-
+# La fecha se pide como dos entradas separadas. No se usa un calendario de día/mes/año.
 with col_a:
-
-    corregimiento = st.selectbox(
-        "Corregimiento",
-        metadata["corregimientos"],
-    )
+    corregimiento = st.selectbox("Corregimiento", metadata["corregimientos"])
 
     anio_prediccion = st.number_input(
         "Año que se quiere priorizar",
         min_value=2020,
         max_value=2100,
-        value=2026,
+        value=max(2026, int(metadata.get("anio_prueba", 2025)) + 1),
         step=1,
     )
 
@@ -182,32 +121,19 @@ with col_a:
         11: "Noviembre",
         12: "Diciembre",
     }
-
-    mes_nombre = st.selectbox(
+    mes_numero = st.selectbox(
         "Mes que se quiere priorizar",
-        list(meses.values()),
+        options=list(meses.keys()),
+        format_func=lambda x: meses[x],
     )
-
-    target_month = next(
-        numero
-        for numero, nombre in meses.items()
-        if nombre == mes_nombre
-    )
-
-
-# ------------------------------------------------------------
-# COLUMNA B
-# ------------------------------------------------------------
 
 with col_b:
-
     previous = st.number_input(
         "Siniestros registrados el mes anterior",
         min_value=0,
         value=0,
         step=1,
     )
-
     rolling = st.number_input(
         "Promedio de siniestros de los tres meses previos",
         min_value=0.0,
@@ -215,242 +141,95 @@ with col_b:
         step=0.1,
     )
 
-
-# ============================================================
-# CREACIÓN DE LA FILA PARA EL MODELO
-# ============================================================
-
 row = pd.DataFrame(
     {
         "corregimiento": [corregimiento],
-        "anio": [anio_prediccion],
-        "mes": [target_month],
-        "mes_seno": [
-            np.sin(
-                2 * np.pi * target_month / 12
-            )
-        ],
-        "mes_coseno": [
-            np.cos(
-                2 * np.pi * target_month / 12
-            )
-        ],
+        "anio": [int(anio_prediccion)],
+        "mes": [int(mes_numero)],
+        "mes_seno": [np.sin(2 * np.pi * mes_numero / 12)],
+        "mes_coseno": [np.cos(2 * np.pi * mes_numero / 12)],
         "siniestros_lag_1": [previous],
         "promedio_3_meses_previo": [rolling],
     }
 )
 
-
-# ============================================================
-# CARACTERÍSTICAS DE LOS MODELOS
-# ============================================================
-
 reg_cat, reg_num = regression_features()
-
 clf_cat, clf_num = classification_features()
-
-
-# ============================================================
-# PREDICCIÓN DE SINIESTROS
-# ============================================================
 
 expected_count = max(
     0.0,
-    float(
-        monthly_model.predict(
-            row[reg_cat + reg_num]
-        )[0]
-    ),
+    float(monthly_model.predict(row[reg_cat + reg_num])[0]),
 )
-
-
-# ============================================================
-# PROBABILIDAD DEL CLASIFICADOR
-# ============================================================
 
 high_probability = float(
-    alert_model.predict_proba(
-        row[clf_cat + clf_num]
-    )[:, 1][0]
+    alert_model.predict_proba(row[clf_cat + clf_num])[:, 1][0]
 )
 
+# IMPORTANTE: la alerta se decide con el CLASIFICADOR, no con la regresión.
+high_label = high_probability >= DECISION_THRESHOLD
 
-# ============================================================
-# ALERTA DE ALTA SINIESTRALIDAD
-# ============================================================
-#
-# Umbral:
-#
-# Menos de 5  -> NO ALTA
-# 5 o más      -> ALTA
-#
-# ============================================================
-
-high_label = (
-    expected_count >= UMBRAL_ALTA_SINIESTRALIDAD
-)
-
-
-# ============================================================
-# RESULTADOS
-# ============================================================
-
-metric_a, metric_b = st.columns(2)
-
-
-metric_a.metric(
-    "Siniestros estimados",
-    f"{expected_count:.2f}",
-)
-
-
+metric_a, metric_b, metric_c = st.columns(3)
+metric_a.metric("Siniestros estimados", f"{expected_count:.2f}")
 metric_b.metric(
     "Alerta de alta siniestralidad",
     "ALTA" if high_label else "NO ALTA",
-    help=(
-        f"Estimación mensual: {expected_count:.2f} siniestros. "
-        f"Umbral de alta siniestralidad: "
-        f"{UMBRAL_ALTA_SINIESTRALIDAD} siniestros."
-    ),
 )
-
-
-# ============================================================
-# EXPLICACIÓN DEL UMBRAL
-# ============================================================
+metric_c.metric(
+    "Puntaje estimado de ALTA",
+    f"{high_probability:.1%}",
+)
 
 st.caption(
-    f"Para esta aplicación, se considera alta siniestralidad "
-    f"cuando la estimación mensual es igual o superior a "
-    f"{UMBRAL_ALTA_SINIESTRALIDAD} siniestros."
+    f"La clase real **ALTA** se define como **{HIGH_COUNT_THRESHOLD} o más siniestros** "
+    f"en un corregimiento-mes. La alerta del clasificador se activa cuando su "
+    f"puntaje alcanza **{DECISION_THRESHOLD:.0%}**. Son dos umbrales distintos: "
+    "uno define la etiqueta histórica y el otro convierte el puntaje del modelo en una alerta."
 )
-
-
-# ============================================================
-# ACCIONES SUGERIDAS
-# ============================================================
-
-st.subheader("Acciones sugeridas")
-
-
-for action in recommended_actions(
-    high_label,
-    expected_count,
-):
-
-    st.write(
-        f"- {action}"
-    )
-
-
-# ============================================================
-# INTERPRETACIÓN
-# ============================================================
-
-with st.expander(
-    "Cómo interpretar los resultados"
-):
-
-    st.write(
-        "La regresión estima cuántos siniestros pueden registrarse "
-        "en el mes seleccionado por corregimiento. "
-        "La alerta de alta siniestralidad se activa cuando la "
-        f"estimación alcanza o supera {UMBRAL_ALTA_SINIESTRALIDAD} "
-        "siniestros. "
-        "El modelo trabaja a nivel corregimiento-mes y utiliza "
-        "información del calendario y de meses previos. "
-        "No identifica causas ni predice el comportamiento de "
-        "personas específicas."
-    )
-
-
-# ============================================================
-# TRANSPARENCIA DEL MODELO
-# ============================================================
-
-st.subheader(
-    "Transparencia del modelo"
-)
-
-
-left, right = st.columns(2)
-
-
-# ------------------------------------------------------------
-# MODELO DE REGRESIÓN
-# ------------------------------------------------------------
-
-with left:
-
-    st.caption(
-        f"Regresión seleccionada: "
-        f"{metadata['modelo_regresion_seleccionado']}"
-    )
-
-    reg_factors = pd.DataFrame(
-        metadata.get(
-            "factores_importantes_regresion",
-            [],
-        )
-    )
-
-    if reg_factors.empty:
-
-        st.write(
-            "El modelo seleccionado no expone "
-            "importancias globales comparables."
-        )
-
-    else:
-
-        st.dataframe(
-            reg_factors,
-            hide_index=True,
-            use_container_width=True,
-        )
-
-
-# ------------------------------------------------------------
-# MODELO DE CLASIFICACIÓN
-# ------------------------------------------------------------
-
-with right:
-
-    st.caption(
-        f"Clasificación seleccionada: "
-        f"{metadata['modelo_clasificacion_seleccionado']}"
-    )
-
-    clf_factors = pd.DataFrame(
-        metadata.get(
-            "factores_importantes_clasificacion",
-            [],
-        )
-    )
-
-    if clf_factors.empty:
-
-        st.write(
-            "El modelo seleccionado no expone "
-            "importancias globales comparables."
-        )
-
-    else:
-
-        st.dataframe(
-            clf_factors,
-            hide_index=True,
-            use_container_width=True,
-        )
-
-
-# ============================================================
-# ADVERTENCIA
-# ============================================================
 
 st.warning(
-    "Los registros son administrativos y pueden tener subregistro "
-    "o cambios de reporte. La aplicación prioriza revisión humana; "
-    "no debe usarse para sancionar personas, atribuir culpa ni "
-    "sustituir una inspección técnica."
+    "El puntaje mostrado es la salida estimada por el modelo y no debe interpretarse "
+    "como una probabilidad perfectamente calibrada ni como certeza de que ocurrirán "
+    f"{HIGH_COUNT_THRESHOLD} o más siniestros."
+)
+
+st.subheader("Acciones sugeridas")
+for action in recommended_actions(high_label, expected_count):
+    st.write(f"- {action}")
+
+with st.expander("Cómo interpretar los resultados"):
+    st.write(
+        "La regresión y la clasificación son dos problemas distintos. La regresión estima "
+        "un conteo esperado, que puede ser decimal, mientras que el Random Forest de "
+        "clasificación asigna un puntaje a la posibilidad de entrar en la categoría ALTA. "
+        "Por eso ambas salidas no tienen que coincidir exactamente."
+    )
+    st.write(
+        f"El umbral de decisión {DECISION_THRESHOLD:.0%} fue fijado usando la validación "
+        "temporal previa al año de prueba y no se reajusta con el test final."
+    )
+
+st.subheader("Transparencia del modelo")
+left, right = st.columns(2)
+
+with left:
+    st.caption(f"Regresión seleccionada: {metadata['modelo_regresion_seleccionado']}")
+    reg_factors = pd.DataFrame(metadata.get("factores_importantes_regresion", []))
+    if reg_factors.empty:
+        st.write("El modelo seleccionado no expone importancias globales comparables.")
+    else:
+        st.dataframe(reg_factors, hide_index=True, use_container_width=True)
+
+with right:
+    st.caption(f"Clasificación operativa: {metadata['modelo_clasificacion_seleccionado']}")
+    clf_factors = pd.DataFrame(metadata.get("factores_importantes_clasificacion", []))
+    if clf_factors.empty:
+        st.write("El modelo seleccionado no expone importancias globales comparables.")
+    else:
+        st.dataframe(clf_factors, hide_index=True, use_container_width=True)
+
+st.warning(
+    "Los registros son administrativos y pueden tener subregistro o cambios de reporte. "
+    "La clasificación final presenta una limitación real por la escasez de meses ALTA: "
+    "el sistema sirve para apoyar priorización y revisión humana, no para sancionar, "
+    "atribuir culpa ni sustituir una inspección técnica."
 )
