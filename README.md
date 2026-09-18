@@ -96,6 +96,7 @@ Muestra simultáneamente:
 - alerta `ALTA` / `NO ALTA` obtenida del **clasificador Random Forest**;
 - puntaje estimado de ALTA;
 - umbral preventivo de decisión (`0.38`);
+- validación de versión de artefactos para impedir que un despliegue reutilice modelos/`metricas.json` antiguos con corte `0.02`;
 - definición histórica de ALTA (`>= 5 siniestros`).
 
 La etiqueta de la app **no** se calcula comparando la predicción de regresión contra 5.

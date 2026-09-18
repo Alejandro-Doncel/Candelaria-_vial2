@@ -24,23 +24,47 @@ REG_MODEL = ARTIFACT_DIR / "modelo_priorizacion_mensual.joblib"
 CLF_MODEL = ARTIFACT_DIR / "modelo_alerta_alta_siniestralidad.joblib"
 METRICS = ARTIFACT_DIR / "metricas.json"
 
+# Versión esperada de los artefactos. Esto evita que un despliegue antiguo
+# conserve un metricas.json/modelo entrenado con el corte 0.02.
+EXPECTED_ARTIFACT_VERSION = "camino_b_final_038_v2"
+EXPECTED_HIGH_COUNT_THRESHOLD = 5
+EXPECTED_DECISION_THRESHOLD = 0.38
+
 
 def artifacts_ready() -> bool:
-    return REG_MODEL.exists() and CLF_MODEL.exists() and METRICS.exists()
+    if not (REG_MODEL.exists() and CLF_MODEL.exists() and METRICS.exists()):
+        return False
+
+    try:
+        metadata = json.loads(METRICS.read_text(encoding="utf-8"))
+        return (
+            metadata.get("artifact_version") == EXPECTED_ARTIFACT_VERSION
+            and int(metadata.get("umbral_alta_siniestralidad", -1))
+            == EXPECTED_HIGH_COUNT_THRESHOLD
+            and abs(
+                float(metadata.get("umbral_decision_clasificacion", -1.0))
+                - EXPECTED_DECISION_THRESHOLD
+            ) < 1e-12
+            and metadata.get("modelo_clasificacion_seleccionado") == "Random Forest"
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 @st.cache_resource(show_spinner=False)
-def ensure_artifacts() -> None:
+def ensure_artifacts(version_key: str) -> None:
     """Entrena una sola vez si el repositorio aún no trae artefactos."""
     if artifacts_ready():
         return
     from src.train import main
 
     main()
+    if not artifacts_ready():
+        raise RuntimeError("Los artefactos generados no corresponden a la versión final 0.38.")
 
 
 @st.cache_resource(show_spinner=False)
-def load_models():
+def load_models(version_key: str):
     return (
         joblib.load(REG_MODEL),
         joblib.load(CLF_MODEL),
@@ -70,7 +94,7 @@ st.caption(
 if not artifacts_ready():
     with st.spinner("Primera ejecución: descargando datos y entrenando los modelos del proyecto..."):
         try:
-            ensure_artifacts()
+            ensure_artifacts(EXPECTED_ARTIFACT_VERSION)
         except Exception as exc:
             st.error(
                 "No fue posible preparar los modelos automáticamente. "
@@ -80,7 +104,7 @@ if not artifacts_ready():
             st.exception(exc)
             st.stop()
 
-monthly_model, alert_model, metadata = load_models()
+monthly_model, alert_model, metadata = load_models(EXPECTED_ARTIFACT_VERSION)
 
 HIGH_COUNT_THRESHOLD = int(metadata.get("umbral_alta_siniestralidad", 5))
 DECISION_THRESHOLD = float(metadata.get("umbral_decision_clasificacion", 0.38))

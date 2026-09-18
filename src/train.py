@@ -46,6 +46,7 @@ from src.features import (
 
 ARTIFACT_DIR = Path("artifacts")
 RANDOM_STATE = 42
+ARTIFACT_VERSION = "camino_b_final_038_v2"
 
 # Umbral de decisión del clasificador. Se eligió usando exclusivamente la
 # validación temporal 2024 y después quedó congelado para evaluar 2025.
@@ -410,6 +411,7 @@ def main() -> dict:
     joblib.dump(final_rf, ARTIFACT_DIR / "modelo_alerta_alta_siniestralidad.joblib")
 
     metadata = {
+        "artifact_version": ARTIFACT_VERSION,
         "dataset_id": DATASET_ID,
         "source": SOURCE_PAGE,
         "registros_incidentes": int(len(incidents)),
