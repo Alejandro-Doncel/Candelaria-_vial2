@@ -1,0 +1,25 @@
+PASOS PARA SUBIR ESTA ENTREGA
+
+1. Descomprime el ZIP.
+2. En GitHub crea un repositorio y sube TODO lo que está dentro de la carpeta del proyecto.
+   No hace falta crear data/ ni artifacts/ vacías.
+3. En Streamlit Community Cloud crea una app con ese repositorio.
+4. Main file path: app.py
+5. Pulsa Deploy.
+
+La primera vez, la app intenta descargar automáticamente el CSV oficial y entrenar los modelos.
+No tienes que ejecutar el notebook para que Streamlit arranque.
+
+SOLO SI la descarga automática falla:
+- descarga el CSV de Datos Abiertos;
+- súbelo al repositorio exactamente como:
+  data/raw/accidentalidad_candelaria.csv
+- vuelve a desplegar.
+
+Cambios principales de esta versión:
+- Ridge -> Regresión lineal.
+- Problema 2 -> ¿el próximo mes tendrá alta siniestralidad un corregimiento?
+- Clasificación: Regresión logística, Árbol de decisión y Random Forest.
+- Sin DummyClassifier ni SMOTE.
+- El EDA original se conserva; solo se ajustó el texto que hacía referencia al antiguo objetivo de severidad.
+- La app muestra regresión + alerta de alta siniestralidad.
