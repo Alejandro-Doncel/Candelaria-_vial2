@@ -26,9 +26,9 @@ METRICS = ARTIFACT_DIR / "metricas.json"
 
 # Versión esperada de los artefactos. Esto evita que un despliegue antiguo
 # conserve un metricas.json/modelo entrenado con el corte 0.02.
-EXPECTED_ARTIFACT_VERSION = "camino_b_final_038_v2"
+EXPECTED_ARTIFACT_VERSION = "camino_b_final_012_v3"
 EXPECTED_HIGH_COUNT_THRESHOLD = 5
-EXPECTED_DECISION_THRESHOLD = 0.38
+EXPECTED_DECISION_THRESHOLD = 0.12
 
 
 def artifacts_ready() -> bool:
@@ -60,7 +60,7 @@ def ensure_artifacts(version_key: str) -> None:
 
     main()
     if not artifacts_ready():
-        raise RuntimeError("Los artefactos generados no corresponden a la versión final 0.38.")
+        raise RuntimeError("Los artefactos generados no corresponden a la versión final 0.12.")
 
 
 @st.cache_resource(show_spinner=False)
@@ -107,7 +107,7 @@ if not artifacts_ready():
 monthly_model, alert_model, metadata = load_models(EXPECTED_ARTIFACT_VERSION)
 
 HIGH_COUNT_THRESHOLD = int(metadata.get("umbral_alta_siniestralidad", 5))
-DECISION_THRESHOLD = float(metadata.get("umbral_decision_clasificacion", 0.38))
+DECISION_THRESHOLD = float(metadata.get("umbral_decision_clasificacion", 0.12))
 
 st.info(
     f"Fuente: {metadata['registros_incidentes']:,} registros entre "

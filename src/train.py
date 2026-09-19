@@ -46,11 +46,11 @@ from src.features import (
 
 ARTIFACT_DIR = Path("artifacts")
 RANDOM_STATE = 42
-ARTIFACT_VERSION = "camino_b_final_038_v2"
+ARTIFACT_VERSION = "camino_b_final_012_v3"
 
 # Umbral de decisión del clasificador. Se eligió usando exclusivamente la
 # validación temporal 2024 y después quedó congelado para evaluar 2025.
-CLASSIFICATION_DECISION_THRESHOLD = 0.38
+CLASSIFICATION_DECISION_THRESHOLD = 0.12
 
 # Umbral muy bajo que se probó únicamente como análisis de sensibilidad.
 # NO se usa en la app ni para seleccionar el modelo final.
@@ -118,29 +118,50 @@ def regression_models() -> dict[str, object]:
 
 
 def classification_models() -> dict[str, object]:
-    """Tres algoritmos del curso; Random Forest es el clasificador operativo."""
+    """Tres algoritmos del curso antes de la optimización temporal."""
     return {
         "Regresión logística": LogisticRegression(
-            C=0.5,
             class_weight="balanced",
             max_iter=2_000,
             solver="liblinear",
             random_state=RANDOM_STATE,
         ),
         "Árbol de decisión": DecisionTreeClassifier(
-            max_depth=6,
-            min_samples_leaf=8,
             class_weight="balanced",
             random_state=RANDOM_STATE,
         ),
-        "Random Forest": RandomForestClassifier(**RF_CLASSIFIER_PARAMS),
+        "Random Forest": RandomForestClassifier(
+            class_weight="balanced_subsample",
+            n_jobs=-1,
+            random_state=RANDOM_STATE,
+        ),
+    }
+
+
+def classification_search_spaces() -> dict[str, dict[str, object]]:
+    return {
+        "Regresión logística": {
+            "model__C": np.logspace(-2, 1, 15),
+        },
+        "Árbol de decisión": {
+            "model__max_depth": [3, 4, 5, 6, 8, 10],
+            "model__min_samples_leaf": [2, 4, 6, 8, 12, 16],
+        },
+        "Random Forest": {
+            "model__n_estimators": [200, 350, 500],
+            "model__max_depth": [6, 8, 12, 16, None],
+            "model__min_samples_leaf": [2, 4, 6, 8],
+            "model__max_features": [0.5, 0.8, 1.0],
+        },
     }
 
 
 def regression_scores(actual: pd.Series, prediction: np.ndarray) -> dict[str, float]:
+    mse = float(mean_squared_error(actual, prediction))
     return {
+        "MSE": mse,
+        "RMSE": float(mse ** 0.5),
         "MAE": float(mean_absolute_error(actual, prediction)),
-        "RMSE": float(mean_squared_error(actual, prediction) ** 0.5),
         "R2": float(r2_score(actual, prediction)),
     }
 
@@ -169,14 +190,6 @@ def classification_scores(
     }
 
 
-def f2_score_from_precision_recall(precision: float, recall: float) -> float:
-    beta2 = 4.0
-    denominator = beta2 * precision + recall
-    if denominator == 0:
-        return 0.0
-    return (1.0 + beta2) * precision * recall / denominator
-
-
 def threshold_table(
     actual: pd.Series,
     probability: np.ndarray,
@@ -193,9 +206,10 @@ def threshold_table(
         rows.append(
             {
                 "Umbral": round(float(threshold), 2),
+                "Accuracy": float(accuracy_score(actual, prediction)),
                 "Precision": precision,
                 "Recall": recall,
-                "F2": f2_score_from_precision_recall(precision, recall),
+                "F1": float(f1_score(actual, prediction, zero_division=0)),
                 "FP": int(fp),
                 "FN": int(fn),
                 "TP": int(tp),
@@ -203,8 +217,8 @@ def threshold_table(
             }
         )
     return pd.DataFrame(rows).sort_values(
-        ["F2", "Recall", "Precision", "Umbral"],
-        ascending=[False, False, False, False],
+        ["F1", "Precision", "Umbral"],
+        ascending=[False, False, False],
     )
 
 
@@ -278,6 +292,95 @@ def tune_regression_with_temporal_validation(
     return selected_name, fitted_specs, validation_results
 
 
+
+def tune_classification_with_temporal_validation(
+    train_before_validation: pd.DataFrame,
+    validation: pd.DataFrame,
+    categorical: list[str],
+    numeric: list[str],
+) -> tuple[
+    dict[str, Pipeline],
+    dict[str, np.ndarray],
+    dict[str, dict[str, object]],
+    pd.DataFrame,
+    pd.DataFrame,
+]:
+    """Optimiza los tres clasificadores usando solo el año de validación."""
+    features = categorical + numeric
+    models = classification_models()
+    spaces = classification_search_spaces()
+
+    validation_models: dict[str, Pipeline] = {}
+    validation_probabilities: dict[str, np.ndarray] = {}
+    best_params: dict[str, dict[str, object]] = {}
+    validation_rows: list[dict[str, float | int | str]] = []
+    optimization_rows: list[dict[str, float | str]] = []
+
+    for name, estimator in models.items():
+        sampled = list(
+            ParameterSampler(
+                spaces[name],
+                n_iter=10,
+                random_state=RANDOM_STATE,
+            )
+        )
+        best_auc = -np.inf
+        best_pipe = None
+        best_probability = None
+        selected_params = None
+
+        for params in sampled:
+            candidate = make_pipeline(categorical, numeric, deepcopy(estimator))
+            candidate.set_params(**params)
+            candidate.fit(
+                train_before_validation[features],
+                train_before_validation[TARGET_CLASSIFICATION],
+            )
+            probability = candidate.predict_proba(validation[features])[:, 1]
+            auc = roc_auc_score(validation[TARGET_CLASSIFICATION], probability)
+
+            if auc > best_auc:
+                best_auc = float(auc)
+                best_pipe = candidate
+                best_probability = probability
+                selected_params = params
+
+        if best_pipe is None or best_probability is None or selected_params is None:
+            raise RuntimeError(f"No fue posible optimizar {name}.")
+
+        validation_models[name] = best_pipe
+        validation_probabilities[name] = best_probability
+        best_params[name] = selected_params
+
+        validation_rows.append(
+            {
+                "Modelo": name,
+                **classification_scores(
+                    validation[TARGET_CLASSIFICATION],
+                    best_probability,
+                    0.50,
+                ),
+            }
+        )
+        optimization_rows.append(
+            {
+                "Modelo": name,
+                "Método": "ParameterSampler, 10 combinaciones",
+                "Criterio": "ROC-AUC en validación temporal",
+                "Mejor ROC-AUC": best_auc,
+                "Hiperparámetros finales": str(selected_params),
+            }
+        )
+
+    return (
+        validation_models,
+        validation_probabilities,
+        best_params,
+        pd.DataFrame(validation_rows),
+        pd.DataFrame(optimization_rows),
+    )
+
+
 def main() -> dict:
     raw = load_raw_data()
     incidents = prepare_incidents(raw)
@@ -328,43 +431,50 @@ def main() -> dict:
     }
 
     # ------------------------------------------------------------------
-    # CLASIFICACIÓN: 3 algoritmos en validación + RF operativo.
+    # CLASIFICACIÓN: optimización temporal + RF operativo.
     # ------------------------------------------------------------------
-    validation_models: dict[str, Pipeline] = {}
-    validation_rows: list[dict[str, float | int | str]] = []
-    for name, estimator in classification_models().items():
-        model = make_pipeline(clf_categorical, clf_numeric, deepcopy(estimator))
-        model.fit(train_before_validation[clf_features], train_before_validation[TARGET_CLASSIFICATION])
-        probability = model.predict_proba(validation[clf_features])[:, 1]
-        validation_rows.append(
-            {
-                "Modelo": name,
-                **classification_scores(validation[TARGET_CLASSIFICATION], probability, 0.50),
-            }
+    (
+        validation_models,
+        validation_probabilities,
+        clf_best_params,
+        classification_validation_results,
+        classification_optimization_summary,
+    ) = tune_classification_with_temporal_validation(
+        train_before_validation,
+        validation,
+        clf_categorical,
+        clf_numeric,
+    )
+
+    rf_val_probability = validation_probabilities["Random Forest"]
+    thresholds_validation = threshold_table(
+        validation[TARGET_CLASSIFICATION],
+        rf_val_probability,
+    )
+    selected_threshold = float(thresholds_validation.iloc[0]["Umbral"])
+
+    if abs(selected_threshold - CLASSIFICATION_DECISION_THRESHOLD) > 1e-12:
+        raise RuntimeError(
+            "El conjunto público cambió o la validación ya no reproduce el corte 0.12 "
+            f"documentado en el informe (corte obtenido: {selected_threshold:.2f})."
         )
-        validation_models[name] = model
 
-    classification_validation_results = pd.DataFrame(validation_rows)
-
-    # Búsqueda del corte SOLO con el RF entrenado sin 2024.
-    rf_validation = validation_models["Random Forest"]
-    rf_val_probability = rf_validation.predict_proba(validation[clf_features])[:, 1]
-    thresholds_validation = threshold_table(validation[TARGET_CLASSIFICATION], rf_val_probability)
-
-    # Se congela 0.38 porque fue el mayor umbral empatado con F2=1,
-    # Recall=1 y Precision=1 en la validación 2024 del proyecto.
     frozen_validation_result = classification_scores(
         validation[TARGET_CLASSIFICATION],
         rf_val_probability,
         CLASSIFICATION_DECISION_THRESHOLD,
     )
 
-    # Reentrenamiento final: 2021-2024 (todo lo anterior al test).
     final_rf = make_pipeline(
         clf_categorical,
         clf_numeric,
-        RandomForestClassifier(**RF_CLASSIFIER_PARAMS),
+        RandomForestClassifier(
+            class_weight="balanced_subsample",
+            n_jobs=-1,
+            random_state=RANDOM_STATE,
+        ),
     )
+    final_rf.set_params(**clf_best_params["Random Forest"])
     final_rf.fit(monthly_train[clf_features], monthly_train[TARGET_CLASSIFICATION])
     rf_test_probability = final_rf.predict_proba(monthly_test[clf_features])[:, 1]
 
@@ -430,12 +540,16 @@ def main() -> dict:
         ),
         "modelo_regresion_seleccionado": selected_reg_name,
         "modelo_clasificacion_seleccionado": "Random Forest",
-        "parametros_random_forest_clasificacion": RF_CLASSIFIER_PARAMS,
+        "parametros_random_forest_clasificacion": {
+            key.replace("model__", ""): value
+            for key, value in clf_best_params["Random Forest"].items()
+        },
         "resultados_regresion_validacion": reg_validation_results.round(6).to_dict(orient="records"),
         "resultado_regresion_test": reg_test_result,
         "baseline_regresion_test": baseline_reg_result,
         "resultados_clasificacion_validacion_umbral_050": classification_validation_results.round(6).to_dict(orient="records"),
-        "resultado_rf_validacion_umbral_038": frozen_validation_result,
+        "optimizacion_clasificacion": classification_optimization_summary.to_dict(orient="records"),
+        "resultado_rf_validacion_umbral_012": frozen_validation_result,
         "tabla_umbrales_rf_validacion_top20": thresholds_validation.head(20).round(6).to_dict(orient="records"),
         "resultado_clasificacion_test": final_classification_result,
         "baseline_clasificacion_test": baseline_classification_result,
@@ -445,9 +559,10 @@ def main() -> dict:
         "factores_importantes_clasificacion": feature_importance(final_rf),
         "corregimientos": sorted(monthly["corregimiento"].unique().tolist()),
         "limitacion_clasificacion": (
-            "La clase ALTA es muy poco frecuente. En el test final el umbral 0.38 puede dejar falsos negativos; "
-            "reducirlo drásticamente aumenta las falsas alertas. El resultado se reporta como una limitación real "
-            "de los datos y variables disponibles, no se corrige mirando el año de prueba."
+            "La clase ALTA es muy poco frecuente. Con el umbral 0.12 seleccionado en validación, "
+            "el test final detectó uno de los dos casos ALTA y generó falsas alertas. Reducir todavía más "
+            "el corte aumenta la sensibilidad, pero también las falsas alertas. El resultado se reporta "
+            "como una limitación real y no se reajusta mirando el año de prueba."
         ),
     }
 
@@ -464,9 +579,9 @@ def main() -> dict:
     print(reg_validation_results.round(4).to_string(index=False))
     print("\nRegresión — test:")
     print(pd.DataFrame([baseline_reg_result, reg_test_result]).round(4).to_string(index=False))
-    print("\nClasificación RF — validación con 0.38:")
+    print("\nClasificación RF — validación con 0.12:")
     print(pd.DataFrame([frozen_validation_result]).round(4).to_string(index=False))
-    print("\nClasificación RF — test con 0.38:")
+    print("\nClasificación RF — test con 0.12:")
     print(pd.DataFrame([final_classification_result]).round(4).to_string(index=False))
     print("\nAnálisis de sensibilidad NO operativo — test con 0.02:")
     print(pd.DataFrame([sensitivity_result]).round(4).to_string(index=False))
