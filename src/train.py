@@ -46,7 +46,7 @@ from src.features import (
 
 ARTIFACT_DIR = Path("artifacts")
 RANDOM_STATE = 42
-ARTIFACT_VERSION = "camino_b_final_012_v3"
+ARTIFACT_VERSION = "camino_b_final_012_v4"
 
 # Umbral de decisión del clasificador. Se eligió usando exclusivamente la
 # validación temporal 2024 y después quedó congelado para evaluar 2025.

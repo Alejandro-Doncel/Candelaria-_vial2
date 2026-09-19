@@ -1,0 +1,4 @@
+Candelaria Vial
+Version: FINAL-012-v4
+Umbral operativo clasificacion: 0.12
+Clase ALTA historica: 5 o mas siniestros

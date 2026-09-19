@@ -26,7 +26,7 @@ METRICS = ARTIFACT_DIR / "metricas.json"
 
 # Versión esperada de los artefactos. Esto evita que un despliegue antiguo
 # conserve un metricas.json/modelo entrenado con el corte 0.02.
-EXPECTED_ARTIFACT_VERSION = "camino_b_final_012_v3"
+EXPECTED_ARTIFACT_VERSION = "camino_b_final_012_v4"
 EXPECTED_HIGH_COUNT_THRESHOLD = 5
 EXPECTED_DECISION_THRESHOLD = 0.12
 
@@ -90,6 +90,7 @@ st.title("🚦 Candelaria Vial")
 st.caption(
     "Apoyo a la priorización preventiva para la Secretaría de Tránsito y Transporte de Candelaria, Valle."
 )
+st.caption("Versión desplegada: **FINAL-012-v4** · Umbral operativo esperado: **12%**")
 
 if not artifacts_ready():
     with st.spinner("Primera ejecución: descargando datos y entrenando los modelos del proyecto..."):
